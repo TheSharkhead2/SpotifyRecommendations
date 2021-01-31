@@ -1,0 +1,6 @@
+spotipy
+python-dotenv
+pandas
+Pillow
+numpy
+tensorflow
