@@ -1,5 +1,5 @@
 .env
-UserPlaylistData/
+UserPlaylistData.csv
 albumCover.jpg
 .cache-Theo
 __pycache__

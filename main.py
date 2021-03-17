@@ -21,6 +21,8 @@ USERNAME = os.getenv('USERNAME')
 redirect_uri = "http://localhost:8888/callback"
 scope = 'user-read-currently-playing'
 
+seedPlaylist = "6ozBeqb7QP6g8C7sRynf8w?si=2heeBEyPRkOdzAPC5nqpEA" #define initial playlist to look at
+ 
  #authenticate things for analysis... here: https://medium.com/@maxtingle/getting-started-with-spotifys-api-spotipy-197c3dc6353b (actually confused --> this is different everywhere I look)
 client_credentials_manager = SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
@@ -31,6 +33,13 @@ def setup_spotipy_user_object():
     return spotipy.Spotify(auth=token)
 
 spUser = setup_spotipy_user_object()
+
+def save_user_data(): #saves user scoring data
+    global initialSongsDF
+
+    print("saving user data...")
+    initialSongsDF.to_csv("UserPlaylistData.csv", index=False) #save user data as csv
+    print(initialSongsDF)
 
 def analyze_playlist(creator, playlist_id): #function originally from: https://github.com/MaxHilsdorf/introduction_to_spotipy/blob/master/introduction_to_spotipy.ipynb
     
@@ -81,14 +90,15 @@ def get_song_info(spObject):
     #get album loaded into python essentially 
     albumImage = itk.PhotoImage(Image.open("albumCover.jpg"))
 
-    #record current user rating
-    if (trackInfo["item"]["duration_ms"] - trackInfo["progress_ms"]) <= 1500:
-        save_score()
+    #reset user rank choice
+    if (trackInfo["item"]["duration_ms"] - trackInfo["progress_ms"]) <= 1001:
+         userRatingVar.set(0) #reset user rating
 
     return ((artist, songName, albumName, albumImage))
 
 def set_tk_widgets(): #set all song/album/artist/albumImage vars in tkinter display
-    
+    global spUser
+
     threading.Timer(1, set_tk_widgets).start() #run with threading
 
     #make sure still authenticated 
@@ -134,13 +144,14 @@ def save_score():
     if not initialSongsDF[initialSongsDF["track_id"].str.contains(song_features["track_id"])].empty: #check if song already listed in dataframe. Citation for part of this: https://stackoverflow.com/questions/21319929/how-to-determine-whether-a-pandas-column-contains-a-particular-value (though this answer was actually wrong?)
         initialSongsDF.loc[initialSongsDF.track_id == song_features["track_id"], "UserRating"] = userRatingVar.get() #set value for UserRating for the song with the same track id (same song)
     else:
+        print("adding song data to dataframe due to it not being present yet...")
         song_features["UserRating"] = userRatingVar.get() #set user rating inside dict before concatination
         #add song to dataframe if it doesn't exsist
         track_df = pd.DataFrame(song_features, index=[0])
         initialSongsDF = pd.concat([initialSongsDF, track_df], ignore_index=True)
 
-    userRatingVar.set(0) #reset user rating
-    print(initialSongsDF)
+    print("Saved score for the song {} as {}".format(song_features["track_name"], userRatingVar.get()))
+    save_user_data() #save this to file
 
 def train_a_model():
     global initialSongsDF
@@ -209,7 +220,13 @@ confirmRatingButton.place(x=300, y=742)
 trainModelButton = tk.Button(window, text="Re-Train Model", padx=5, pady=5, relief="raised", justify="center", height=1, command=train_a_model)
 trainModelButton.place(x=500, y=742)
 
-initialSongsDF = analyze_playlist(USERNAME, '2U4fo4bQ8OYUHLKygLQ6Mw?si=uCm7JHJTR7GsYHLQDOt58Q')
+#try to load old user data, upon failing, create new data based on seeded playlist
+try:
+    initialSongsDF = pd.read_csv("UserPlaylistData.csv")
+except:
+    print("Failed to find old user data, creating new data off of seeded playlist")
+    initialSongsDF = analyze_playlist(USERNAME, seedPlaylist)
+
 print(initialSongsDF)
 set_tk_widgets()
 window.mainloop()
