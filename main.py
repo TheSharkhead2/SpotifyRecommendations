@@ -11,7 +11,7 @@ from PIL import Image
 import webbrowser
 import urllib
 import tensorflow as tf
-import numpy
+import numpy as np
 
 #load client id and client secret (specified in .env file)... for future reference: https://stackoverflow.com/questions/40216311/reading-in-environment-variables-from-an-environment-file
 load_dotenv()
@@ -33,6 +33,12 @@ def setup_spotipy_user_object():
     return spotipy.Spotify(auth=token)
 
 spUser = setup_spotipy_user_object()
+
+def scale_user_rating_data(userRatings): #scale model inputs to be between 0 and 1
+    returnList = []
+    for rating in userRatings:
+        returnList.append((rating+10)/20) #scale -10 to 10 to 0 to 1 
+    return returnList
 
 def save_user_data(): #saves user scoring data
     global initialSongsDF
@@ -80,6 +86,7 @@ def get_song_info(spObject):
     songName = trackInfo["item"]["name"] #get song name
     albumName = trackInfo["item"]["album"]["name"] #get album name
     albumImageUrl = trackInfo['item']['album']['images'][0]['url'] #get album image url
+    songId = trackInfo['item']['id']
 
     #download album image
     resource = urllib.request.urlopen(albumImageUrl)
@@ -94,7 +101,7 @@ def get_song_info(spObject):
     if (trackInfo["item"]["duration_ms"] - trackInfo["progress_ms"]) <= 1001:
          userRatingVar.set(0) #reset user rating
 
-    return ((artist, songName, albumName, albumImage))
+    return ((artist, songName, albumName, albumImage, songId))
 
 def set_tk_widgets(): #set all song/album/artist/albumImage vars in tkinter display
     global spUser
@@ -116,6 +123,12 @@ def set_tk_widgets(): #set all song/album/artist/albumImage vars in tkinter disp
     #set album image
     albumImageTK.configure(image=songInfo[3])
     albumImageTK.image = songInfo[3]
+
+    #get user rating if already rated 
+    if not initialSongsDF[initialSongsDF["track_id"].str.contains(songInfo[4])].empty: #check if song already listed in dataframe. Citation for part of this: https://stackoverflow.com/questions/21319929/how-to-determine-whether-a-pandas-column-contains-a-particular-value (though this answer was actually wrong?)
+        currentUserRatingVar.set("Your Current Rating: " + str(initialSongsDF.loc[initialSongsDF.track_id == songInfo[4], "UserRating"].values[0]))
+    else: #if no entry exists, set as "nan"
+        currentUserRatingVar.set("Your Current Rating: nan")
 
 def save_score():
     global initialSongsDF 
@@ -161,9 +174,9 @@ def train_a_model():
     tempInitialSongDF.dropna(inplace=True) #remove all None values
 
     DFOnlyInputs = tempInitialSongDF.iloc[:, 4:16] #get dataframe without input values... citation: https://stackoverflow.com/questions/11285613/selecting-multiple-columns-in-a-pandas-dataframe
-    inputValues = DFOnlyInputs.values #get input values (data spotify has on each song or song attributes)
+    inputValues = np.asarray(DFOnlyInputs.values) #get input values (data spotify has on each song or song attributes)
 
-    outputValues = tempInitialSongDF["UserRating"].values #get all user ratings for above songs
+    outputValues = np.asarray(scale_user_rating_data(tempInitialSongDF["UserRating"].values)) #get all user ratings for above songs
 
     if len(outputValues) < 40: #don't train if there isn't that much data
         print("Not enough data to train off of")
@@ -180,9 +193,10 @@ def train_a_model():
         ])
 
         model.compile(optimizer='adam',
+                loss='sparse_categorical_crossentropy',
                 metrics=['accuracy'])
 
-        model.fit()
+        model.fit(x=inputValues, y=outputValues, epochs=epochs)
 
 #set up window
 window = tk.Tk()
@@ -200,6 +214,8 @@ albumImage = songInfo[3]
 userRatingVar = tk.IntVar()
 userRatingVar.set(0)
 
+currentUserRatingVar = tk.StringVar()
+
 #setup tkinter widgets 
 albumImageTK = tk.Label(window, image=albumImage)
 albumImageTK.place(x=5,y=5)
@@ -211,6 +227,9 @@ albumLabel.place(x=50, y=702)
 songLabel = tk.Label(window, padx=15, pady=15, textvariable=songText)
 songLabel.place(x=50, y=742)
 
+currentUserRatingLabel = tk.Label(window, padx=15, pady=15, textvariable=currentUserRatingVar)
+currentUserRatingLabel.place(x=285, y=662)
+
 userRating = tk.Spinbox(window, from_=-10, to=10, textvariable=userRatingVar)
 userRating.place(x=300, y=702)
 
@@ -219,6 +238,8 @@ confirmRatingButton.place(x=300, y=742)
 
 trainModelButton = tk.Button(window, text="Re-Train Model", padx=5, pady=5, relief="raised", justify="center", height=1, command=train_a_model)
 trainModelButton.place(x=500, y=742)
+
+
 
 #try to load old user data, upon failing, create new data based on seeded playlist
 try:
