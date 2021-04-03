@@ -12,6 +12,8 @@ import webbrowser
 import urllib
 import tensorflow as tf
 import numpy as np
+from sklearn import preprocessing
+from sklearn.model_selection import train_test_split
 
 #load client id and client secret (specified in .env file)... for future reference: https://stackoverflow.com/questions/40216311/reading-in-environment-variables-from-an-environment-file
 load_dotenv()
@@ -22,7 +24,10 @@ redirect_uri = "http://localhost:8888/callback"
 scope = 'user-read-currently-playing'
 
 seedPlaylist = "6ozBeqb7QP6g8C7sRynf8w?si=2heeBEyPRkOdzAPC5nqpEA" #define initial playlist to look at
- 
+
+nnModelPath = "nn_model" #define path for neural network model save file
+nnModelGlobal = None #define empty variable to put neural network model into
+
  #authenticate things for analysis... here: https://medium.com/@maxtingle/getting-started-with-spotifys-api-spotipy-197c3dc6353b (actually confused --> this is different everywhere I look)
 client_credentials_manager = SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
@@ -127,8 +132,12 @@ def set_tk_widgets(): #set all song/album/artist/albumImage vars in tkinter disp
     #get user rating if already rated 
     if not initialSongsDF[initialSongsDF["track_id"].str.contains(songInfo[4])].empty: #check if song already listed in dataframe. Citation for part of this: https://stackoverflow.com/questions/21319929/how-to-determine-whether-a-pandas-column-contains-a-particular-value (though this answer was actually wrong?)
         currentUserRatingVar.set("Your Current Rating: " + str(initialSongsDF.loc[initialSongsDF.track_id == songInfo[4], "UserRating"].values[0]))
+        set_model_predicted_rating() #set variable for current model prediction if user has already rated song
+
     else: #if no entry exists, set as "nan"
         currentUserRatingVar.set("Your Current Rating: nan")
+
+        modelPredictionText.set("Model's Prediction: hidden") #don't display model prediction if user hasn't rated yet
 
 def save_score():
     global initialSongsDF 
@@ -166,9 +175,8 @@ def save_score():
     print("Saved score for the song {} as {}".format(song_features["track_name"], userRatingVar.get()))
     save_user_data() #save this to file
 
-def train_a_model():
+def _get_training_inputs():
     global initialSongsDF
-    epochs = 5
 
     tempInitialSongDF = initialSongsDF.copy() #make copy to not risk damage to original 
     tempInitialSongDF.dropna(inplace=True) #remove all None values
@@ -176,27 +184,108 @@ def train_a_model():
     DFOnlyInputs = tempInitialSongDF.iloc[:, 4:16] #get dataframe without input values... citation: https://stackoverflow.com/questions/11285613/selecting-multiple-columns-in-a-pandas-dataframe
     inputValues = np.asarray(DFOnlyInputs.values) #get input values (data spotify has on each song or song attributes)
 
+    return inputValues
+
+def create_nn_model(): #create tensorflow neural network 
+
+    inputs = tf.keras.layers.Input(shape=(12,)) #define input shape
+    dense1 = tf.keras.layers.Dense(12, activation="tanh")(inputs)
+    dense2 = tf.keras.layers.Dense(24)(dense1)
+    dense3 = tf.keras.layers.Dense(48)(dense2)
+    output = tf.keras.layers.Dense(1, activation="linear")(dense3)
+    model = tf.keras.models.Model(inputs=inputs, outputs=output)
+
+    model.compile(optimizer="Adam", loss="mse", metrics=["mae", "acc"])
+
+    return model
+
+def load_saved_nn_model(): #load model saved as file
+    global nnModelGlobal 
+    global nnModelPath
+
+    try: 
+        model = create_nn_model()
+
+        model.load_weights(nnModelPath)
+
+        nnModelGlobal = model
+    except: 
+        print("No saved nn model, leaving undefined")
+
+def set_model_predicted_rating():
+    global nnModelGlobal
+    global initialSongsDF
+
+    artist, songName, albumName, albumImage, songId = get_song_info(spUser)
+
+    prefix = "Model's Prediction: " #set prefix for variable
+
+    if not initialSongsDF[initialSongsDF["track_id"].str.contains(songId)].empty: #check if listed in dataframe
+        #if listed, can display 
+
+        onlySpecificSongDF = initialSongsDF[initialSongsDF["track_id"] == songId]
+        songDataAsList = onlySpecificSongDF.values.tolist()[0][4:16] #convert dataframe to list, take first row as will be only row, constrain to values that are interesting.
+
+        songInformation = np.asarray([songDataAsList]) #extract song data from dataframe into numpy array 
+
+        #scale input data same way it was trained
+        scaler = preprocessing.MinMaxScaler()
+        scaler.fit(_get_training_inputs())
+        songInformation = scaler.transform(songInformation)
+
+        if nnModelGlobal != None: #if the model has been trained 
+            modelPredictionValue = nnModelGlobal.predict(songInformation)
+
+            modelPredictionValue = (modelPredictionValue - 0.5) * 20 #rescale prediction to how the user rates songs
+
+        else:
+            print("no model defined")
+            modelPredictionValue = "none"
+
+        modelPredictionText.set(prefix + str(modelPredictionValue))
+    else:
+        print("can't set, not listed in dataframe yet. Try saving a score first.")
+        modelPredictionText.set(prefix + "hidden") #don't display if not saved yet/don't have data
+
+def train_a_model():
+    global initialSongsDF
+    global nnModelPath
+    global nnModelGlobal
+
+    epochs = 5000
+
+    inputValues = _get_training_inputs()
+
+    #set up scaler 
+    scaler = preprocessing.MinMaxScaler()
+    scaler.fit(inputValues)
+
+    inputValues = scaler.transform(inputValues) #scale data to allow model to get better fit
+
+    tempInitialSongDF = initialSongsDF.copy() #make copy to not risk damage to original 
+    tempInitialSongDF.dropna(inplace=True) #remove all None values
+
     outputValues = np.asarray(scale_user_rating_data(tempInitialSongDF["UserRating"].values)) #get all user ratings for above songs
+
+    X_train, X_test, y_train, y_test = train_test_split(inputValues, outputValues, test_size=0.33) #split input output into training and testing sets
 
     if len(outputValues) < 40: #don't train if there isn't that much data
         print("Not enough data to train off of")
     else:
-        print(inputValues)
+        print(inputValues[0])
         print(outputValues)
         
-        # needed review from: https://www.tensorflow.org/overview/
-        model = tf.keras.models.Sequential([ 
-            tf.keras.layers.Dense(12, activation='tanh'),
-            tf.keras.layers.Dense(12),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.Dense(6),
-        ])
+        #create model (neural network)
+        model = create_nn_model()
 
-        model.compile(optimizer='adam',
-                loss='sparse_categorical_crossentropy',
-                metrics=['accuracy'])
+        model.fit(x=X_train, y=y_train, epochs=epochs)
+        
+        model.evaluate(X_test, y_test)
 
-        model.fit(x=inputValues, y=outputValues, epochs=epochs)
+        model.save_weights(nnModelPath)
+
+        nnModelGlobal = model
+
 
 #set up window
 window = tk.Tk()
@@ -207,6 +296,7 @@ window.geometry("652x800")
 artistText = tk.StringVar()
 albumText = tk.StringVar()
 songText = tk.StringVar()
+modelPredictionText = tk.StringVar()
 
 songInfo = get_song_info(spUser)
 albumImage = songInfo[3]
@@ -239,6 +329,8 @@ confirmRatingButton.place(x=300, y=742)
 trainModelButton = tk.Button(window, text="Re-Train Model", padx=5, pady=5, relief="raised", justify="center", height=1, command=train_a_model)
 trainModelButton.place(x=500, y=742)
 
+modelPredictionValueLabel = tk.Label(window, padx=10, pady=10, textvariable=modelPredictionText)
+modelPredictionValueLabel.place(x=500, y=702)
 
 
 #try to load old user data, upon failing, create new data based on seeded playlist
